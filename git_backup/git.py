@@ -105,8 +105,8 @@ def maintain(dest: Path, skip_lfs: bool = False) -> list[str]:
     has_commits = git_in(dest, "rev-parse", "-q", "--verify", "HEAD").returncode == 0  # empty repos have none
     if has_commits and not (dest / ".git" / "index").exists():
         skipped = skip_invalid_paths(dest)
-        notes.append(f"checkout rebuilt, {skipped} file(s) with Windows-invalid names skipped (kept in history)"
-                     if skipped is not None else "checkout repair failed")
+        notes.append("checkout repair failed" if skipped is None else "checkout rebuilt" + (
+            f", {skipped} file(s) with Windows-invalid names skipped (kept in history)" if skipped else ""))
     if skip_lfs and (freed := drop_lfs(dest)):
         notes.append(f"LFS content removed, {freed / 2**20:.0f} MB freed")
     return notes
