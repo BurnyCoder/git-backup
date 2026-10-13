@@ -28,6 +28,9 @@ GIT_FLAGS = [
     "-c", "credential.helper=!gh auth git-credential",
     # Allow paths longer than 260 characters on Windows (https://git-scm.com/docs/git-config#Documentation/git-config.txt-corelongPaths).
     "-c", "core.longpaths=true",
+    # An LFS file missing on the server (HTTP 404) stays a pointer instead of aborting the whole
+    # checkout (https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-config.adoc#transfer-upload--download-settings).
+    "-c", "lfs.skipdownloaderrors=true",
 ]
 
 # Sparse-checkout patterns (gitignore syntax, non-cone mode): check out everything except names

@@ -136,3 +136,17 @@ def test_maintain_repairs_checkout_without_index(remote, tmp_path):
     assert gitops.maintain(dest)  # returns notes about what it fixed
     assert (dest / "README.md").exists() and git("status", "--porcelain", cwd=dest) == ""
     assert gitops.maintain(dest) == []  # healthy clone: nothing to do
+
+
+@needs_lfs
+def test_missing_lfs_object_keeps_pointer_instead_of_failing(remote, tmp_path):
+    bare, work = remote
+    # Commit an LFS pointer whose object was never uploaded (like a 404 on GitHub's LFS server).
+    (work / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+    (work / "gone.bin").write_bytes(b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"0" * 64 + b"\nsize 5\n")
+    git("add", ".gitattributes", "gone.bin", cwd=work)
+    git("commit", "-q", "-m", "dangling lfs pointer", cwd=work)
+    git("push", "-q", "--no-verify", "origin", "HEAD", cwd=work)  # skip the LFS pre-push upload hook
+    dest = tmp_path / "proj"
+    assert gitops.clone_or_update(str(bare), dest).status == "cloned"
+    assert is_pointer(dest / "gone.bin") and (dest / "README.md").exists()
