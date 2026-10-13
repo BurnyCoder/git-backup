@@ -33,6 +33,7 @@ Running it again later updates the existing clones in place. Only new commits ar
 
 - Backs up all repositories of several users and orgs: public and private, forks optional, empty repos included.
 - Clones normally, so each backup has full history, all branches as `origin/*`, and browsable files. Git LFS files on the checked-out branch are downloaded automatically.
+- Can skip large Git LFS data per repo (`SKIP_LFS_REPOS`): those repos keep small pointer files, and the data stays on GitHub. An LFS file that is missing on GitHub's server (404) also stays a pointer instead of breaking the checkout.
 - Updates incrementally on re-runs, fast-forward only, and removes branches that were deleted on GitHub.
 - Clones several repos at once (`PARALLEL_JOBS`).
 - Checks free disk space before cloning and warns if it may run out.
@@ -73,6 +74,7 @@ Running it again later updates the existing clones in place. Only new commits ar
 | `INCLUDE_FORKS` | `true` | Also back up forks |
 | `PARALLEL_JOBS` | `4` | Repos cloned or updated at the same time |
 | `REPORT_TOP_N` | `40` | Rows in each "largest" table |
+| `SKIP_LFS_REPOS` | none | Comma-separated `owner/name` repos whose Git LFS files are not downloaded (pointers only) |
 | `LOG_LEVEL` | `INFO` | `DEBUG` also logs every git command and its output |
 
 4. Run `uv sync` to create `.venv` and install the dependencies.
@@ -83,15 +85,17 @@ Running it again later updates the existing clones in place. Only new commits ar
 uv run python backup.py
 ```
 ```bash
-uv run python backup.py --report-only
+uv run python backup.py --local
 ```
 ```bash
 uv run pytest
 ```
 
-`--report-only` re-measures the existing backup and rewrites the report without contacting GitHub. The exit code is `1` if any repo failed, so the command can be scheduled.
+`--local` works only on what's already on disk, without contacting GitHub. It repairs clones whose checkout failed, removes downloaded LFS data from `SKIP_LFS_REPOS`, and rewrites the report. The exit code is `1` if any repo failed, so the command can be scheduled.
 
-**Disk space:** a full backup takes roughly GitHub's reported size plus the same again for checked-out files. The tool warns when free space is below 2.5× GitHub's reported size. Re-runs only add new commits.
+**Disk space:**
+- A full backup takes roughly GitHub's reported size plus about the same again for checked-out files. The tool warns when free space is below 2.5× GitHub's reported size. Re-runs only add new commits.
+- **Git LFS data is not included in GitHub's reported size**, and each LFS file is stored twice locally: once in `.git/lfs` and once checked out. For a large LFS dataset, list the repo in `SKIP_LFS_REPOS`. Example: `big-dataset-repo` holds 2.4 GB of LFS data, which took 4.9 GB per clone.
 
 **Restore a repo:**
 - Copy or open its folder, or run `git clone repos/<owner>/<name> <new-place>`.
@@ -106,8 +110,9 @@ backup.py
   ├─ log.setup_logging      logs/backup_YYYYmmdd_HHMMSS.log + terminal
   ├─ github.list_repos      gh repo list <owner> --json …   (once per owner)
   ├─ report.check_disk_space  free space vs. 2.5 × GitHub-reported size
-  ├─ git.backup_all         N workers: git clone  (new) | git pull --ff-only --prune (existing)
+  ├─ git.backup_all         N workers: git clone  (new) | maintain + git pull --ff-only --prune (existing)
   │                          → repos/<owner>/<name>/  (+ one log line per repo, live)
+  │   (--local: git.maintain_all instead of the three phases above — offline repair / LFS removal)
   └─ report.write_report    walk repos/ + git rev-list|cat-file → reports/size-report.md
 ```
 
@@ -131,6 +136,8 @@ flowchart LR
     main --> git[git.py<br/>backup_all / clone_or_update]
     git -- git clone / pull<br/>creds: gh auth git-credential --> GH2[(github.com)]
     git --> repos[(repos/owner/name)]
+    main -- --local --> mnt[git.py<br/>maintain_all]
+    mnt --> repos
     main --> rep2[report.py<br/>write_report]
     repos --> rep2
     rep2 --> md[reports/size-report.md]

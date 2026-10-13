@@ -35,6 +35,16 @@ The overview, configuration and usage are in the [README](../README.md). This pa
   - `cloned` / `updated`: success.
   - `partial`: full history, plus all files except those with Windows-invalid names. The log shows how many were skipped.
   - `failed`: nothing usable. The download failed, or `pull --ff-only` refused because the branch was rewritten on GitHub (force-push).
+- **Repairing broken clones offline (`git.maintain`).**
+  - A clone whose checkout failed has its history but no `.git/index` file. That makes it cheap to detect: `maintain` rebuilds the checkout with `skip_invalid_paths`.
+  - It runs before every pull and in `--local` mode (`git.maintain_all`).
+  - `maintain_all` handles `SKIP_LFS_REPOS` repos first, so space is freed before checkouts that need space are rebuilt.
+- **Skipping LFS data (`git.drop_lfs`, `SKIP_LFS_REPOS`):**
+  - New clones get `--config lfs.fetchexclude=*`, so git-lfs never downloads that repo's LFS files.
+  - Existing clones get the same setting. Then `.git/lfs/objects` is deleted, and the checked-out LFS files are deleted and checked out again, which writes pointer files (`git status` stays clean).
+  - The data remains in GitHub's LFS storage.
+  - Setting docs: [git-lfs-config](https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-config.adoc).
+- **Missing LFS objects.** `lfs.skipdownloaderrors=true` (in `GIT_FLAGS`) keeps a pointer file when GitHub answers 404 for an LFS object, instead of aborting the checkout.
 - **Fast-forward only.** A backup should never create merge commits. If a branch was force-pushed, the run reports `failed` and you decide what to do. `pull` has already fetched all objects at that point, so nothing is lost.
 - **Empty repositories** are cloned so they are recorded. Updating them runs only `git fetch --prune`, because there is no branch to merge yet.
 - **Sizes:**
@@ -44,6 +54,7 @@ The overview, configuration and usage are in the [README](../README.md). This pa
 ## Limitations
 
 - Only git data is backed up. Issues, pull-request discussions, wikis (`<repo>.wiki.git`), releases and Actions artifacts are not.
-- Git LFS: only the LFS files of the checked-out branch are downloaded (by the LFS filter during checkout). Other branches keep LFS pointer files. Run `git lfs fetch --all` inside a clone to get everything.
+- Git LFS: only the LFS files of the checked-out branch are downloaded (by the LFS filter during checkout). Other branches keep LFS pointer files, and so do repos in `SKIP_LFS_REPOS`. Run `git lfs fetch --all` (after `git config --unset lfs.fetchexclude`) inside a clone to get everything.
+- A backup is a snapshot: branches pushed after a repo was cloned arrive on the next run.
 - Non-default branches exist as `origin/<name>` remote-tracking branches, not as local branches.
 - Repos you collaborate on but don't own are not listed. `gh repo list OWNER` returns only the owner's repos.

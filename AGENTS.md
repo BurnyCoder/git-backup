@@ -7,7 +7,7 @@ Notes for coding agents and contributors. The user-facing description is in [REA
 - `backup.py`: the only entry point. It calls the phases in order and contains no logic of its own.
 - `git_backup/shell.py`: **all** external commands go through `run()`. Don't call `subprocess` anywhere else.
 - `git_backup/github.py`: the `Repo` dataclass and `gh repo list`.
-- `git_backup/git.py`: `GIT_FLAGS`, `clone_or_update()`, `backup_all()` and the `Result` dataclass.
+- `git_backup/git.py`: `GIT_FLAGS`, `clone_or_update()`, `backup_all()`, the offline `maintain()`/`maintain_all()` (repair broken checkouts, `drop_lfs()`), `skip_invalid_paths()` and the `Result` dataclass.
 - `git_backup/report.py`: the disk check, scanning and the markdown report.
 - `git_backup/config.py`: the only place that reads environment variables. Add new settings here and to `.env.example`.
 
