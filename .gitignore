@@ -3,6 +3,8 @@
 repos/
 # Timestamped run logs written by git_backup/log.py.
 logs/
+# Generated size report: lists the backed-up accounts' repo and file names.
+reports/
 # Local configuration; may hold machine-specific values (template: .env.example).
 .env
 # uv virtual environment and Python bytecode caches.

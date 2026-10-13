@@ -6,7 +6,7 @@ Makes a local backup of every GitHub repository owned by the users or organisati
 
 1. **Ask GitHub what exists.** `gh repo list <owner> --json …` returns every repository of each owner, private ones included. It uses the token the GitHub CLI already stores.
 2. **Clone each repo, or update it if it's already there.** A normal `git clone` copies the full history of every branch and checks out the default branch, so each backup is complete and you can browse it. On later runs, `git pull --ff-only --prune` brings each existing clone up to date in place; it never makes a second copy.
-3. **Measure the result.** The tool walks the backup folder and splits each repo into git history (`.git/`) and checked-out files. It also lists the biggest file versions in history with `git rev-list --objects --all | git cat-file --batch-check`, and writes everything to [`reports/size-report.md`](reports/size-report.md).
+3. **Measure the result.** The tool walks the backup folder and splits each repo into git history (`.git/`) and checked-out files. It also lists the biggest file versions in history with `git rev-list --objects --all | git cat-file --batch-check`, and writes everything to `reports/size-report.md` (kept local).
 
 ## Quick start
 
@@ -95,7 +95,7 @@ uv run pytest
 
 **Disk space:**
 - A full backup takes roughly GitHub's reported size plus about the same again for checked-out files. The tool warns when free space is below 2.5× GitHub's reported size. Re-runs only add new commits.
-- **Git LFS data is not included in GitHub's reported size**, and each LFS file is stored twice locally: once in `.git/lfs` and once checked out. For a large LFS dataset, list the repo in `SKIP_LFS_REPOS`. Example: `big-dataset-repo` holds 2.4 GB of LFS data, which took 4.9 GB per clone.
+- **Git LFS data is not included in GitHub's reported size**, and each LFS file is stored twice locally: once in `.git/lfs` and once checked out. For a large LFS dataset, list the repo in `SKIP_LFS_REPOS`. Example: a repo with 2.4 GB of LFS data takes about 4.9 GB per clone.
 
 **Restore a repo:**
 - Copy or open its folder, or run `git clone repos/<owner>/<name> <new-place>`.
@@ -152,15 +152,14 @@ backup.py            entry point: wires the phases together
 git_backup/          config.py, log.py, shell.py, github.py, git.py, report.py
 tests/               pytest suite (local bare repos stand in for GitHub)
 docs/architecture.md design decisions, Windows notes, limitations
-reports/             generated size report (committed)
-repos/  logs/  .env  local only, gitignored
+repos/ logs/ reports/ .env   local only, gitignored (clones, logs, size report, your account names)
 ```
 
 ## More
 
 - [docs/architecture.md](docs/architecture.md): how each phase works, design choices and limitations (what isn't backed up).
 - [AGENTS.md](AGENTS.md): notes for coding agents and contributors.
-- [reports/size-report.md](reports/size-report.md): the latest size report.
+- `reports/size-report.md`: the latest size report, written locally by each run (gitignored because it lists your repo names).
 
 ## Sources
 

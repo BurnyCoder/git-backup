@@ -31,6 +31,7 @@ uv run python backup.py
 
 ## Safety rules
 
-- Never commit `repos/`, `logs/` or `.env` (they are gitignored). Nested clones would otherwise become gitlinks.
+- Never commit `repos/`, `logs/`, `reports/` or `.env` (they are gitignored). Nested clones would otherwise become gitlinks.
+- Keep the repo account-agnostic: real GitHub owners and repo names belong only in the local `.env`, the logs and the report. Committed files and examples use placeholders (`your-user`, `your-org`; tests use `alice` / `acme-org`).
 - Don't change the user's global git config. Pass settings with `git -c` in `GIT_FLAGS`.
 - The backup drive is nearly full. Don't make a second full copy for testing: re-running updates the clones in place, and tests use temp dirs.
