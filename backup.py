@@ -1,6 +1,7 @@
 """Back up every GitHub repository of the configured owners, then report what uses the most space.
 
-Usage:  uv run python backup.py            (settings come from .env, see .env.example)
+Usage:  uv run python backup.py                (settings come from .env, see .env.example)
+        uv run python backup.py --report-only  (only re-measure the existing backup)
 
 Each phase is a function from the git_backup package; this file only wires them together:
   1. load settings      config.load_config
@@ -11,6 +12,7 @@ Each phase is a function from the git_backup package; this file only wires them 
   6. size report        report.write_report    (reports/size-report.md)
 """
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -26,9 +28,17 @@ log = logging.getLogger("backup")
 
 def main() -> int:
     """Run all phases; return a process exit code (1 if any repository failed)."""
+    # --report-only re-measures the existing backup without contacting GitHub
+    # (https://docs.python.org/3/library/argparse.html#action).
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--report-only", action="store_true", help="only rewrite reports/size-report.md")
+    args = parser.parse_args()
     cfg = load_config(Path(__file__).resolve().parent)  # .env sits next to this file
     log_file = setup_logging(cfg.log_dir, cfg.log_level)
     log.info("Logging to %s", log_file)
+    if args.report_only:
+        write_report(cfg.backup_dir, cfg.report_dir, cfg.report_top_n, results=[])
+        return 0
     if not cfg.owners:
         log.error("GITHUB_OWNERS is empty; set it in .env (see .env.example)")
         return 1
