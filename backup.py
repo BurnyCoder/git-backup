@@ -1,7 +1,7 @@
 """Back up every GitHub repository of the configured owners, then report what uses the most space.
 
 Usage:  uv run python backup.py                (settings come from .env, see .env.example)
-        uv run python backup.py --report-only  (only re-measure the existing backup)
+        uv run python backup.py --local        (no GitHub: repair/slim existing clones, then report)
 
 Each phase is a function from the git_backup package; this file only wires them together:
   1. load settings      config.load_config
@@ -9,6 +9,7 @@ Each phase is a function from the git_backup package; this file only wires them 
   3. list repos         github.list_repos      (gh repo list, all owners)
   4. check disk space   report.check_disk_space
   5. clone / update     git.backup_all         (parallel git clone / git pull)
+                        git.maintain_all       (--local instead of 3-5: offline repair + SKIP_LFS_REPOS)
   6. size report        report.write_report    (reports/size-report.md)
 """
 
@@ -18,7 +19,7 @@ import sys
 from pathlib import Path
 
 from git_backup.config import load_config
-from git_backup.git import backup_all
+from git_backup.git import backup_all, maintain_all
 from git_backup.github import list_repos
 from git_backup.log import setup_logging
 from git_backup.report import check_disk_space, write_report
@@ -28,16 +29,18 @@ log = logging.getLogger("backup")
 
 def main() -> int:
     """Run all phases; return a process exit code (1 if any repository failed)."""
-    # --report-only re-measures the existing backup without contacting GitHub
+    # --local works only on the clones already on disk, without contacting GitHub
     # (https://docs.python.org/3/library/argparse.html#action).
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--report-only", action="store_true", help="only rewrite reports/size-report.md")
+    parser.add_argument("--local", action="store_true",
+                        help="repair existing clones, drop LFS content of SKIP_LFS_REPOS, rewrite the report")
     args = parser.parse_args()
     cfg = load_config(Path(__file__).resolve().parent)  # .env sits next to this file
     log_file = setup_logging(cfg.log_dir, cfg.log_level)
     log.info("Logging to %s", log_file)
-    if args.report_only:
-        write_report(cfg.backup_dir, cfg.report_dir, cfg.report_top_n, results=[])
+    if args.local:
+        results = maintain_all(cfg.backup_dir, cfg.skip_lfs_repos)
+        write_report(cfg.backup_dir, cfg.report_dir, cfg.report_top_n, results)
         return 0
     if not cfg.owners:
         log.error("GITHUB_OWNERS is empty; set it in .env (see .env.example)")
@@ -49,7 +52,7 @@ def main() -> int:
     cfg.backup_dir.mkdir(parents=True, exist_ok=True)  # disk_usage needs an existing path
     check_disk_space(sum(r.disk_kb for r in repos), cfg.backup_dir)
 
-    results = backup_all(repos, cfg.backup_dir, cfg.parallel_jobs)
+    results = backup_all(repos, cfg.backup_dir, cfg.parallel_jobs, cfg.skip_lfs_repos)
     write_report(cfg.backup_dir, cfg.report_dir, cfg.report_top_n, results)
 
     failed = [r for r in results if r.status == "failed"]

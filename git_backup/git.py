@@ -7,6 +7,7 @@ git clone: https://git-scm.com/docs/git-clone   git pull: https://git-scm.com/do
 """
 
 import logging
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -67,6 +68,47 @@ def skip_invalid_paths(dest: Path) -> int | None:
     return sum(line.startswith("S ") for line in git_in(dest, "ls-files", "-t").stdout.splitlines())
 
 
+def drop_lfs(dest: Path) -> int:
+    """Delete a clone's downloaded Git LFS content, keep the small pointer files; return bytes freed.
+
+    lfs.fetchexclude=* stops git-lfs from downloading this repo's LFS files again
+    (https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-config.adoc). With the local
+    object store gone, the smudge filter writes the pointer instead of the content on checkout.
+    The real files remain in GitHub's LFS storage.
+    """
+    git_in(dest, "config", "lfs.fetchexclude", "*")
+    store = dest / ".git" / "lfs" / "objects"
+    if not any(f.is_file() for f in store.rglob("*")):  # nothing downloaded (git-lfs may leave empty dirs)
+        return 0
+    # `git lfs ls-files --name-only` lists the LFS-tracked paths of HEAD
+    # (https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-ls-files.adoc).
+    files = [dest / p for p in git_in(dest, "lfs", "ls-files", "--name-only").stdout.splitlines()]
+    files = [f for f in files if f.is_file()]
+    freed = sum(f.stat().st_size for f in [*files, *store.rglob("*")] if f.is_file())
+    shutil.rmtree(store)  # the LFS copies under .git/
+    for f in files:
+        f.unlink()  # the checked-out copies...
+    git_in(dest, "checkout", "--", ".")  # ...are re-created as pointer files
+    return freed
+
+
+def maintain(dest: Path, skip_lfs: bool = False) -> list[str]:
+    """Fix an existing clone in place without network access; return notes on what was changed.
+
+    - A clone whose checkout failed has history but no .git/index: rebuild it, skipping Windows-invalid names.
+    - Repos listed in SKIP_LFS_REPOS: remove downloaded LFS content.
+    """
+    notes = []
+    has_commits = git_in(dest, "rev-parse", "-q", "--verify", "HEAD").returncode == 0  # empty repos have none
+    if has_commits and not (dest / ".git" / "index").exists():
+        skipped = skip_invalid_paths(dest)
+        notes.append(f"checkout rebuilt, {skipped} file(s) with Windows-invalid names skipped (kept in history)"
+                     if skipped is not None else "checkout repair failed")
+    if skip_lfs and (freed := drop_lfs(dest)):
+        notes.append(f"LFS content removed, {freed / 2**20:.0f} MB freed")
+    return notes
+
+
 @dataclass(frozen=True)
 class Result:
     """Outcome of one repository: status is cloned / updated / partial / failed."""
@@ -76,21 +118,26 @@ class Result:
     detail: str = ""  # last line of git's output, or the error text
 
 
-def clone_or_update(url: str, dest: Path, empty: bool = False) -> Result:
+def clone_or_update(url: str, dest: Path, empty: bool = False, skip_lfs: bool = False) -> Result:
     """Clone url into dest if dest is not a repo yet, otherwise update it from origin."""
     label = f"{dest.parent.name}/{dest.name}"  # repos/<owner>/<name> -> "owner/name"
+    notes = []
     if (dest / ".git").is_dir():
+        notes = maintain(dest, skip_lfs)  # repair/slim first so the pull works on a healthy clone
         # Empty repos have no branch to merge, so only fetch; otherwise fetch all branches,
         # prune deleted ones and fast-forward the checked-out branch (never creates merge commits).
         proc = git_in(dest, *(["fetch", "--prune"] if empty else ["pull", "--ff-only", "--prune"]))
         ok_status = "updated"
     else:
         dest.parent.mkdir(parents=True, exist_ok=True)  # repos/<owner>/ on first use
-        proc = run(["git", *GIT_FLAGS, "clone", url, str(dest)])
+        # --config is stored in the new repo before checkout, so LFS content is never downloaded
+        # (https://git-scm.com/docs/git-clone#Documentation/git-clone.txt---configkeyvalue).
+        lfs = ["--config", "lfs.fetchexclude=*"] if skip_lfs else []
+        proc = run(["git", *GIT_FLAGS, "clone", *lfs, url, str(dest)])
         ok_status = "cloned"
     output = proc.stderr or proc.stdout
     if proc.returncode == 0:
-        return Result(label, ok_status, error_line(output))
+        return Result(label, ok_status, "; ".join(notes) or error_line(output))
     # git deletes the folder when a clone's download fails, but keeps it when only the checkout fails;
     # "invalid path" means a file name Windows cannot store: skip those files, keep the rest.
     if "invalid path" in output and (dest / ".git").is_dir():
@@ -101,13 +148,27 @@ def clone_or_update(url: str, dest: Path, empty: bool = False) -> Result:
     return Result(label, "failed", error_line(output))
 
 
-def backup_all(repos: list[Repo], backup_dir: Path, jobs: int) -> list[Result]:
+def maintain_all(backup_dir: Path, skip_lfs: set[str]) -> list[Result]:
+    """Run maintain() on every existing clone (no GitHub access); return results for changed repos."""
+    results = []
+    clones = [d for d in backup_dir.glob("*/*") if (d / ".git").is_dir()]
+    # Repos that will shed LFS content go first (False sorts before True): free space before
+    # rebuilding checkouts, which needs space.
+    for dest in sorted(clones, key=lambda d: (f"{d.parent.name}/{d.name}" not in skip_lfs, str(d))):
+        label = f"{dest.parent.name}/{dest.name}"
+        if notes := maintain(dest, label in skip_lfs):
+            results.append(Result(label, "partial" if "Windows-invalid" in notes[0] else "updated", "; ".join(notes)))
+            log.info("maintained %s: %s", label, results[-1].detail)
+    return results
+
+
+def backup_all(repos: list[Repo], backup_dir: Path, jobs: int, skip_lfs: set[str] = frozenset()) -> list[Result]:
     """Clone/update every repo into backup_dir/<owner>/<name> using `jobs` parallel workers."""
     results = []
     # Threads are enough: the work happens in git child processes, Python only waits
     # (https://docs.python.org/3/library/concurrent.futures.html#threadpoolexecutor).
     with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="git") as pool:
-        futures = {pool.submit(timed, r, backup_dir / r.owner / r.name): r for r in repos}
+        futures = {pool.submit(timed, r, backup_dir / r.owner / r.name, r.full_name in skip_lfs): r for r in repos}
         # as_completed yields each future as soon as it finishes, so progress is logged live.
         for i, future in enumerate(as_completed(futures), start=1):
             result, seconds = future.result()
@@ -118,9 +179,9 @@ def backup_all(repos: list[Repo], backup_dir: Path, jobs: int) -> list[Result]:
     return results
 
 
-def timed(repo: Repo, dest: Path) -> tuple[Result, float]:
+def timed(repo: Repo, dest: Path, skip_lfs: bool) -> tuple[Result, float]:
     """Run clone_or_update for one repo and measure how long it took."""
     log.info("start   %s", repo.full_name)
     start = time.perf_counter()  # monotonic clock for durations (https://docs.python.org/3/library/time.html#time.perf_counter)
-    result = clone_or_update(repo.url, dest, empty=repo.is_empty)
+    result = clone_or_update(repo.url, dest, empty=repo.is_empty, skip_lfs=skip_lfs)
     return result, time.perf_counter() - start

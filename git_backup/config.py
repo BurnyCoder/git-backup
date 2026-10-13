@@ -24,6 +24,7 @@ class Config:
     parallel_jobs: int  # concurrent clone/update workers
     report_top_n: int  # rows in each "largest" table
     log_level: str
+    skip_lfs_repos: set[str]  # "owner/name" repos whose Git LFS files are not downloaded
 
 
 def load_config(root: Path) -> Config:
@@ -33,9 +34,10 @@ def load_config(root: Path) -> Config:
     # (https://github.com/theskumar/python-dotenv#load-configuration-without-altering-the-environment).
     load_dotenv(root / ".env")
     env = os.environ.get  # short alias: env("KEY", "default")
+    # "a, b ," -> ["a", "b"]: trim spaces and drop empty items from a comma list
+    items = lambda key: [v.strip() for v in env(key, "").split(",") if v.strip()]
     return Config(
-        # "a, b ," -> ["a", "b"]: trim spaces and drop empty items from the comma list
-        owners=[o.strip() for o in env("GITHUB_OWNERS", "").split(",") if o.strip()],
+        owners=items("GITHUB_OWNERS"),
         backup_dir=root / env("BACKUP_DIR", "repos"),  # `/` joins; an absolute value replaces root
         log_dir=root / env("LOG_DIR", "logs"),
         report_dir=root / env("REPORT_DIR", "reports"),
@@ -43,4 +45,5 @@ def load_config(root: Path) -> Config:
         parallel_jobs=int(env("PARALLEL_JOBS", "4")),
         report_top_n=int(env("REPORT_TOP_N", "40")),
         log_level=env("LOG_LEVEL", "INFO"),
+        skip_lfs_repos=set(items("SKIP_LFS_REPOS")),
     )

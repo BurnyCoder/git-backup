@@ -1,5 +1,6 @@
 """Tests for git_backup.git: clone on first run, fast-forward on later runs, failures reported."""
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -79,3 +80,59 @@ def test_backup_all_places_repos_under_owner(remote, tmp_path):
     assert sorted(r.repo for r in results) == ["alice/a", "alice/b"]
     assert all(r.status == "cloned" for r in results)
     assert (tmp_path / "repos" / "alice" / "a" / "README.md").exists()
+
+
+def lfs_remote(remote):
+    """Add an LFS-tracked 2000-byte file to the fixture remote (git-lfs works with file:// remotes)."""
+    bare, work = remote
+    git("lfs", "install", "--local", cwd=work)  # hooks for this work repo only
+    git("lfs", "track", "*.bin", cwd=work)  # writes the filter rule into .gitattributes
+    git("add", ".gitattributes", cwd=work)
+    commit_file(work, "data/big.bin", 2000, "lfs file")  # push also uploads the LFS object
+    return bare
+
+
+def lfs_files(dest: Path) -> list[Path]:
+    """Downloaded LFS objects of a clone (git-lfs may leave empty folders behind)."""
+    return [f for f in (dest / ".git" / "lfs" / "objects").rglob("*") if f.is_file()]
+
+
+def is_pointer(path: Path) -> bool:
+    """LFS pointer files start with this spec line (https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md)."""
+    return path.read_bytes().startswith(b"version https://git-lfs.github.com/spec/v1")
+
+
+needs_lfs = pytest.mark.skipif(shutil.which("git-lfs") is None, reason="git-lfs not installed")
+
+
+@needs_lfs
+def test_drop_lfs_keeps_pointers_and_frees_space(remote, tmp_path):
+    dest = tmp_path / "proj"
+    gitops.clone_or_update(str(lfs_remote(remote)), dest)
+    assert not is_pointer(dest / "data" / "big.bin")  # normal clone downloads LFS content
+
+    freed = gitops.drop_lfs(dest)
+    assert freed >= 4000  # the LFS store copy + the checked-out copy
+    assert lfs_files(dest) == []
+    assert is_pointer(dest / "data" / "big.bin")
+    assert git("status", "--porcelain", cwd=dest) == ""  # pointers match what git has committed
+    assert gitops.clone_or_update(str(remote[0]), dest, skip_lfs=True).status == "updated"
+    assert lfs_files(dest) == []  # updates don't download it again
+
+
+@needs_lfs
+def test_clone_with_skip_lfs_downloads_pointers_only(remote, tmp_path):
+    dest = tmp_path / "proj"
+    assert gitops.clone_or_update(str(lfs_remote(remote)), dest, skip_lfs=True).status == "cloned"
+    assert is_pointer(dest / "data" / "big.bin")
+
+
+def test_maintain_repairs_checkout_without_index(remote, tmp_path):
+    bare, _ = remote
+    dest = tmp_path / "proj"
+    gitops.clone_or_update(str(bare), dest)
+    (dest / ".git" / "index").unlink()  # what a clone looks like after its checkout failed
+    (dest / "README.md").unlink()
+    assert gitops.maintain(dest)  # returns notes about what it fixed
+    assert (dest / "README.md").exists() and git("status", "--porcelain", cwd=dest) == ""
+    assert gitops.maintain(dest) == []  # healthy clone: nothing to do

@@ -165,7 +165,7 @@ def write_report(backup_dir: Path, report_dir: Path, top_n: int, results: list[R
     git_total = sum(s.git_bytes for s in sizes)
     files_total = sum(s.files_bytes for s in sizes)
     status = Counter(r.status for r in results)
-    problems = [r for r in results if r.status not in ("cloned", "updated")]
+    problems = [r for r in results if r.status in ("partial", "failed")]
     top_files = largest_files(entries, top_n)
     top_blobs = largest_history_blobs(backup_dir, top_n)
     top_ext = extension_totals(entries)[:top_n]
