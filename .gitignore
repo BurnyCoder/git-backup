@@ -1,0 +1,11 @@
+# The cloned repositories themselves: nested git repos would be recorded as gitlinks
+# and the backup is meant to stay local (https://git-scm.com/docs/gitignore).
+repos/
+# Timestamped run logs written by git_backup/log.py.
+logs/
+# Local configuration; may hold machine-specific values (template: .env.example).
+.env
+# uv virtual environment and Python bytecode caches.
+.venv/
+__pycache__/
+.pytest_cache/

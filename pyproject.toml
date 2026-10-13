@@ -1,0 +1,20 @@
+# Project metadata and dependencies, managed by uv (https://docs.astral.sh/uv/concepts/projects/layout/).
+[project]
+name = "git-backup"
+version = "0.1.0"
+description = "Clone or update every GitHub repo of the configured owners and report what uses disk space."
+requires-python = ">=3.14"
+dependencies = [
+    "python-dotenv>=1.2.4", # loads .env into os.environ (https://github.com/theskumar/python-dotenv)
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1", # test runner (https://docs.pytest.org/)
+]
+
+# Lets tests import the local git_backup package without installing it
+# (https://docs.pytest.org/en/stable/reference/reference.html#confval-pythonpath).
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
