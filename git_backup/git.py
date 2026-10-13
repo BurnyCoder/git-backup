@@ -29,6 +29,43 @@ GIT_FLAGS = [
     "-c", "core.longpaths=true",
 ]
 
+# Sparse-checkout patterns (gitignore syntax, non-cone mode): check out everything except names
+# containing characters Windows forbids (https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file),
+# e.g. "file.md:Zone.Identifier" copied from WSL. Such files stay in git history, just not on disk.
+# https://git-scm.com/docs/git-sparse-checkout#_internalsnon_cone_problems
+WINDOWS_SAFE = ["/*", "!*:*", '!*"*', "!*<*", "!*>*", "!*|*", "!*\\?*", "!*\\**"]
+
+
+def git_in(dest: Path, *args: str):
+    """Run `git <GIT_FLAGS> -C dest <args>` through shell.run."""
+    return run(["git", *GIT_FLAGS, "-C", str(dest), *args])
+
+
+def error_line(text: str) -> str:
+    """The most useful line of git output: the first error/fatal line, else the last line."""
+    lines = text.strip().splitlines()
+    return next((l for l in lines if l.startswith(("error:", "fatal:"))), lines[-1] if lines else "")
+
+
+def skip_invalid_paths(dest: Path) -> int | None:
+    """Make a checkout that failed on Windows-invalid names succeed by leaving those files out.
+
+    Returns how many files were skipped, or None if the repair failed.
+    core.protectNTFS=false (this repo only) lets the index hold such names; the sparse patterns
+    then keep them off the disk, which is what protectNTFS guards against
+    (https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreprotectNTFS).
+    Same fix as https://support.atlassian.com/bitbucket-cloud/kb/invalid-path-fatal-unable-to-checkout-working-tree-while-cloning-the-repository-in-windows/
+    plus sparse-checkout so the invalid files are never written.
+    """
+    for args in (["config", "core.protectNTFS", "false"],
+                 ["sparse-checkout", "set", "--no-cone", *WINDOWS_SAFE],
+                 ["reset", "-q", "--hard", "HEAD"]):  # rebuild index + working tree from HEAD
+        if git_in(dest, *args).returncode != 0:
+            return None
+    # `ls-files -t` tags skip-worktree (sparse-excluded) entries with "S"
+    # (https://git-scm.com/docs/git-ls-files#Documentation/git-ls-files.txt--t).
+    return sum(line.startswith("S ") for line in git_in(dest, "ls-files", "-t").stdout.splitlines())
+
 
 @dataclass(frozen=True)
 class Result:
@@ -45,20 +82,23 @@ def clone_or_update(url: str, dest: Path, empty: bool = False) -> Result:
     if (dest / ".git").is_dir():
         # Empty repos have no branch to merge, so only fetch; otherwise fetch all branches,
         # prune deleted ones and fast-forward the checked-out branch (never creates merge commits).
-        action = ["fetch", "--prune"] if empty else ["pull", "--ff-only", "--prune"]
-        proc = run(["git", *GIT_FLAGS, "-C", str(dest), *action])
-        status = "updated" if proc.returncode == 0 else "failed"
+        proc = git_in(dest, *(["fetch", "--prune"] if empty else ["pull", "--ff-only", "--prune"]))
+        ok_status = "updated"
     else:
         dest.parent.mkdir(parents=True, exist_ok=True)  # repos/<owner>/ on first use
         proc = run(["git", *GIT_FLAGS, "clone", url, str(dest)])
-        if proc.returncode == 0:
-            status = "cloned"
-        else:
-            # git deletes the folder when the download fails, but keeps it when only the checkout
-            # fails (e.g. a file name that is invalid on Windows): history is saved, files are not.
-            status = "partial" if (dest / ".git").is_dir() else "failed"
-    lines = (proc.stderr or proc.stdout).strip().splitlines()
-    return Result(label, status, lines[-1] if lines else "")
+        ok_status = "cloned"
+    output = proc.stderr or proc.stdout
+    if proc.returncode == 0:
+        return Result(label, ok_status, error_line(output))
+    # git deletes the folder when a clone's download fails, but keeps it when only the checkout fails;
+    # "invalid path" means a file name Windows cannot store: skip those files, keep the rest.
+    if "invalid path" in output and (dest / ".git").is_dir():
+        skipped = skip_invalid_paths(dest)
+        # A failed pull fetched but did not move the branch yet, so retry it once after the repair.
+        if skipped is not None and (ok_status == "cloned" or git_in(dest, "pull", "--ff-only").returncode == 0):
+            return Result(label, "partial", f"{skipped} file(s) with Windows-invalid names skipped (kept in history)")
+    return Result(label, "failed", error_line(output))
 
 
 def backup_all(repos: list[Repo], backup_dir: Path, jobs: int) -> list[Result]:

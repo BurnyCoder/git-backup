@@ -1,6 +1,10 @@
 """Tests for git_backup.git: clone on first run, fast-forward on later runs, failures reported."""
 
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from conftest import commit_file, git
 from git_backup import git as gitops
@@ -38,6 +42,29 @@ def test_empty_remote_clones_and_updates(tmp_path):
     dest = tmp_path / "empty"
     assert gitops.clone_or_update(str(bare), dest, empty=True).status == "cloned"
     assert gitops.clone_or_update(str(bare), dest, empty=True).status == "updated"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="':' is a valid file name character outside Windows")
+def test_windows_invalid_names_are_skipped_not_fatal(remote, tmp_path):
+    bare, work = remote
+    # Commit a path Windows cannot store, using plumbing so nothing is written to the work tree
+    # (https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---cacheinfoltmodegtltobjectgtltpathgt).
+    git("config", "core.protectNTFS", "false", cwd=work)
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=work, input="ads",
+                          capture_output=True, text=True, check=True).stdout.strip()  # store content, get its id
+    git("update-index", "--add", "--cacheinfo", f"100644,{blob},notes.md:Zone.Identifier", cwd=work)
+    git("commit", "-q", "-m", "bad name", cwd=work)
+    git("push", "-q", "origin", "HEAD", cwd=work)
+
+    dest = tmp_path / "proj"
+    result = gitops.clone_or_update(str(bare), dest)
+    assert result.status == "partial"
+    assert "1 file" in result.detail
+    assert (dest / "README.md").exists()  # the rest of the tree is checked out
+    assert git("status", "--porcelain", cwd=dest) == ""  # clean: the bad file is skipped, not deleted
+    commit_file(work, "later.txt", 3, "after")  # later updates keep working
+    assert gitops.clone_or_update(str(bare), dest).status == "updated"
+    assert (dest / "later.txt").exists()
 
 
 def test_bad_url_is_reported_not_raised(tmp_path):
